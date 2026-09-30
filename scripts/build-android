@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/../apps/android"
+if command -v gradle >/dev/null 2>&1; then
+  gradle testDebugUnitTest assembleDebug
+else
+  echo "Gradle 8.9+ is required. CI installs it automatically." >&2
+  exit 1
+fi
