@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Open Dots</string>
+    <string name="accessibility_description">Optional, visible device control for approved Open Dots tasks. It can inspect and interact with the currently visible interface only while you enable it in Android Settings.</string>
+</resources>
