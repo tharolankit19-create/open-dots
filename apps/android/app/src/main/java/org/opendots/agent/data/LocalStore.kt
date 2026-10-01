@@ -170,6 +170,10 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "open_dots_agent.
 
     fun listMemory(limit: Int = 100): List<MemoryItem> = searchMemory("", limit)
 
+    fun clearPolicies() {
+        writableDatabase.delete("policies", null, null)
+    }
+
     fun clearMemory() {
         writableDatabase.delete("memory", null, null)
     }
