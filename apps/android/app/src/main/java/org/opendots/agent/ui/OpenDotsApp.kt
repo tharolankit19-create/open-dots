@@ -404,6 +404,10 @@ private fun AgentScreen(state: AppState) {
                         }
                     ) { Text("Open Accessibility settings") }
 
+                    OutlinedButton(onClick = { state.clearDevicePolicies() }) {
+                        Text("Reset saved device permissions")
+                    }
+
                     if (Build.VERSION.SDK_INT >= 33) {
                         OutlinedButton(
                             onClick = { notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS) }
