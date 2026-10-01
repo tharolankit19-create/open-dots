@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Open Dots Agent</string>
+    <string name="accessibility_service_name">Open Dots device control</string>
+    <string name="accessibility_service_description">Optional, user-controlled accessibility access for visible UI inspection and actions requested in Open Dots.</string>
+</resources>
