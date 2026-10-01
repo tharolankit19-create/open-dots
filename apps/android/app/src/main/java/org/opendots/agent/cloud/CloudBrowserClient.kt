@@ -11,6 +11,17 @@ data class CloudBrowserConfig(
     val botId: String = "bot-open-dots-1"
 )
 
+data class CloudFrame(
+    val available: Boolean,
+    val frameId: String?,
+    val format: String,
+    val width: Int,
+    val height: Int,
+    val url: String?,
+    val dataBase64: String?,
+    val message: String?
+)
+
 data class CloudActionResponse(
     val completed: Boolean,
     val pendingApproval: Boolean,
@@ -45,15 +56,70 @@ class CloudBrowserClient {
             }
         }
 
+    suspend fun screenshot(
+        config: CloudBrowserConfig,
+        token: String
+    ): Result<CloudFrame> = withContext(Dispatchers.IO) {
+        runCatching {
+            val (_, json) = request(
+                "GET",
+                config,
+                token,
+                "/api/v1/computers/${config.botId}/screenshot",
+                null
+            )
+            val result = json.optJSONObject("result") ?: json
+            CloudFrame(
+                available = result.optBoolean("available", false),
+                frameId = result.optString("frame_id").takeIf { it.isNotBlank() && it != "null" },
+                format = result.optString("format", "jpeg"),
+                width = result.optInt("width", 0),
+                height = result.optInt("height", 0),
+                url = result.optString("url").takeIf { it.isNotBlank() },
+                dataBase64 = result.optString("data").takeIf { it.isNotBlank() && it != "null" },
+                message = result.optString("message").takeIf { it.isNotBlank() }
+            )
+        }
+    }
+
     suspend fun navigate(
         config: CloudBrowserConfig,
         token: String,
         url: String
+    ): Result<CloudActionResponse> = openAction(
+        config = config,
+        token = token,
+        action = "browser_navigate",
+        arguments = JSONObject().put("url", url),
+        pendingMessage = "Cloud browser navigation needs approval.",
+        completedMessage = "Cloud browser navigation completed."
+    )
+
+    suspend fun sendInput(
+        config: CloudBrowserConfig,
+        token: String,
+        event: JSONObject
+    ): Result<CloudActionResponse> = openAction(
+        config = config,
+        token = token,
+        action = "send_input",
+        arguments = JSONObject().put("event", event),
+        pendingMessage = "Cloud browser input needs approval.",
+        completedMessage = "Cloud browser input completed."
+    )
+
+    private suspend fun openAction(
+        config: CloudBrowserConfig,
+        token: String,
+        action: String,
+        arguments: JSONObject,
+        pendingMessage: String,
+        completedMessage: String
     ): Result<CloudActionResponse> = withContext(Dispatchers.IO) {
         runCatching {
             val body = JSONObject()
-                .put("action", "browser_navigate")
-                .put("arguments", JSONObject().put("url", url))
+                .put("action", action)
+                .put("arguments", arguments)
             val (code, json) = request(
                 "POST", config, token, "/api/v1/computers/${config.botId}/actions", body
             )
@@ -67,14 +133,14 @@ class CloudBrowserClient {
                     completed = false,
                     pendingApproval = true,
                     requestId = requestId,
-                    message = "Cloud browser navigation needs approval.",
+                    message = pendingMessage,
                     payload = json
                 )
             } else {
                 CloudActionResponse(
                     completed = true,
                     pendingApproval = false,
-                    message = "Cloud browser navigation completed.",
+                    message = completedMessage,
                     payload = json
                 )
             }
