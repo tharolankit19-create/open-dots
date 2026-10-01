@@ -232,18 +232,12 @@ class AppState(private val context: Context) {
             $memoryContext
         """.trimIndent()
         val history = messages.map { it.role to it.content }
-        addAssistant("Thinking…")
-        val thinkingIndex = messages.lastIndex
         val result = providerClient.chat(providerConfig, key, history, system)
         val finalText = result.fold(
             onSuccess = { it },
             onFailure = { "Model request failed: ${it.message ?: it.javaClass.simpleName}" }
         )
-        val replacement = store.addMessage("assistant", finalText)
-        if (thinkingIndex >= 0 && messages[thinkingIndex].content == "Thinking…") {
-            messages.removeAt(thinkingIndex)
-        }
-        messages += replacement
+        messages += store.addMessage("assistant", finalText)
     }
 
     private fun requestOpenApp(query: String) {
