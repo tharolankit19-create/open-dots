@@ -58,8 +58,10 @@ class CloudBrowserClient {
                 "POST", config, token, "/api/v1/computers/${config.botId}/actions", body
             )
             if (code == 202) {
-                val requestId = json.optJSONObject("request")?.optString("id")
+                val requestObject = json.optJSONObject("request")
+                val requestId = requestObject?.optString("request_id")
                     ?.takeIf { it.isNotBlank() }
+                    ?: requestObject?.optString("id")?.takeIf { it.isNotBlank() }
                     ?: json.optJSONObject("approval")?.optString("request_id")
                 CloudActionResponse(
                     completed = false,
