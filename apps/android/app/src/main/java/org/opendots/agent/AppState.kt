@@ -8,6 +8,7 @@ import androidx.compose.runtime.setValue
 import org.opendots.agent.cloud.CloudActionResponse
 import org.opendots.agent.cloud.CloudBrowserClient
 import org.opendots.agent.cloud.CloudBrowserConfig
+import org.opendots.agent.cloud.CloudFrame
 import org.opendots.agent.data.AuditEntry
 import org.opendots.agent.data.ChatMessage
 import org.opendots.agent.data.LocalStore
@@ -25,9 +26,15 @@ import org.opendots.agent.model.ProviderClient
 import org.opendots.agent.model.ProviderConfig
 import org.opendots.agent.scheduler.RoutineWorker
 import org.opendots.agent.security.SecretStore
+import org.json.JSONObject
 
 data class PendingDeviceApproval(val scope: ActionScope, val target: AppTarget)
-data class PendingCloudApproval(val requestId: String, val url: String)
+data class PendingCloudApproval(
+    val requestId: String,
+    val capability: String,
+    val target: String,
+    val description: String
+)
 
 class AppState(private val context: Context) {
     private val prefs = context.getSharedPreferences("open_dots_settings", Context.MODE_PRIVATE)
@@ -87,6 +94,8 @@ class AppState(private val context: Context) {
     )
         private set
     var cloudStatus by mutableStateOf("Not connected")
+        private set
+    var cloudFrame by mutableStateOf<CloudFrame?>(null)
         private set
 
     fun defaultBase(provider: String): String = when (provider) {
@@ -150,7 +159,29 @@ class AppState(private val context: Context) {
             onSuccess = { "Cloud browser running" },
             onFailure = { "Start failed: ${it.message}" }
         )
-        if (cloudStatus == "Cloud browser running") refreshCloudStatus()
+        if (cloudStatus == "Cloud browser running") {
+            refreshCloudStatus()
+            refreshCloudFrame()
+        }
+    }
+
+    suspend fun refreshCloudFrame() {
+        val token = secrets.get("cloud_owner_token").orEmpty()
+        if (cloudConfig.baseUrl.isBlank() || token.isBlank()) {
+            cloudStatus = "Cloud Browser is not configured"
+            return
+        }
+        cloud.screenshot(cloudConfig, token).fold(
+            onSuccess = { frame ->
+                cloudFrame = frame
+                if (frame.available) {
+                    cloudStatus = frame.url?.let { "Frame: $it" } ?: "Cloud browser frame refreshed"
+                } else {
+                    cloudStatus = frame.message ?: "Cloud browser frame unavailable"
+                }
+            },
+            onFailure = { cloudStatus = "Frame failed: ${it.message}" }
+        )
     }
 
     fun addMemory(content: String) {
@@ -335,9 +366,15 @@ class AppState(private val context: Context) {
             addAssistant("Cloud Browser could not start: ${started.exceptionOrNull()?.message}")
             return
         }
-        val action = cloud.navigate(cloudConfig, token, url)
-        action.fold(
-            onSuccess = { response -> handleCloudNavigationResponse(url, response) },
+        cloud.navigate(cloudConfig, token, url).fold(
+            onSuccess = { response ->
+                handleCloudActionResponse(
+                    capability = "browser.navigate",
+                    target = url,
+                    description = "Navigate Cloud Browser to $url",
+                    response = response
+                )
+            },
             onFailure = {
                 addAssistant("Cloud Browser navigation failed: ${it.message}")
                 addAudit("browser.navigate", url, "gateway", "failed", it.message.orEmpty())
@@ -347,19 +384,82 @@ class AppState(private val context: Context) {
 
     suspend fun navigateCloud(url: String) = prepareCloudNavigation(url)
 
-    private fun handleCloudNavigationResponse(url: String, response: CloudActionResponse) {
+    suspend fun cloudClick(x: Int, y: Int) {
+        sendCloudInput(
+            target = "click($x,$y)",
+            description = "Click Cloud Browser at x=$x, y=$y",
+            event = JSONObject().put("type", "click").put("x", x).put("y", y)
+        )
+    }
+
+    suspend fun cloudType(text: String) {
+        if (text.isBlank()) return
+        sendCloudInput(
+            target = "type",
+            description = "Type into the focused Cloud Browser control",
+            event = JSONObject().put("type", "type").put("text", text)
+        )
+    }
+
+    suspend fun cloudKeypress(key: String) {
+        if (key.isBlank()) return
+        sendCloudInput(
+            target = "keypress:$key",
+            description = "Press $key in Cloud Browser",
+            event = JSONObject().put("type", "keypress").put("key", key)
+        )
+    }
+
+    suspend fun cloudScroll(deltaY: Int) {
+        sendCloudInput(
+            target = "scroll:$deltaY",
+            description = "Scroll Cloud Browser by $deltaY",
+            event = JSONObject()
+                .put("type", "scroll")
+                .put("deltaX", 0)
+                .put("deltaY", deltaY)
+        )
+    }
+
+    private suspend fun sendCloudInput(
+        target: String,
+        description: String,
+        event: JSONObject
+    ) {
+        val token = secrets.get("cloud_owner_token").orEmpty()
+        if (cloudConfig.baseUrl.isBlank() || token.isBlank()) {
+            addAssistant("Cloud Browser is not configured.")
+            return
+        }
+        cloud.sendInput(cloudConfig, token, event).fold(
+            onSuccess = { response ->
+                handleCloudActionResponse("browser.input", target, description, response)
+            },
+            onFailure = {
+                addAudit("browser.input", target, "gateway", "failed", it.message.orEmpty())
+                cloudStatus = "Input failed: ${it.message}"
+            }
+        )
+    }
+
+    private suspend fun handleCloudActionResponse(
+        capability: String,
+        target: String,
+        description: String,
+        response: CloudActionResponse
+    ) {
         if (response.pendingApproval) {
             val id = response.requestId
             if (id.isNullOrBlank()) {
                 addAssistant("Cloud Browser requested approval but returned no request id.")
                 return
             }
-            pendingCloudApproval = PendingCloudApproval(id, url)
+            pendingCloudApproval = PendingCloudApproval(id, capability, target, description)
             return
         }
-        addAudit("browser.navigate", url, "server policy", "success")
-        addAssistant("Cloud Browser navigated to $url.")
-        cloudStatus = "Navigated to $url"
+        addAudit(capability, target, "server policy", "success")
+        cloudStatus = response.message
+        refreshCloudFrame()
     }
 
     suspend fun resolveCloudApproval(allow: Boolean) {
@@ -375,22 +475,29 @@ class AppState(private val context: Context) {
             onSuccess = {
                 val result = if (allow && it.completed) "success" else "denied"
                 addAudit(
-                    "browser.navigate",
-                    pending.url,
+                    pending.capability,
+                    pending.target,
                     if (allow) "user approval" else "user denied",
                     result
                 )
                 addAssistant(
                     if (allow && it.completed) {
-                        "Cloud Browser navigated to ${pending.url}."
+                        "Cloud Browser action completed: ${pending.description}"
                     } else {
                         "Cloud Browser action denied."
                     }
                 )
                 cloudStatus = it.message
+                if (allow && it.completed) refreshCloudFrame()
             },
             onFailure = {
-                addAudit("browser.navigate", pending.url, "user approval", "failed", it.message.orEmpty())
+                addAudit(
+                    pending.capability,
+                    pending.target,
+                    "user approval",
+                    "failed",
+                    it.message.orEmpty()
+                )
                 addAssistant("Cloud Browser approval failed: ${it.message}")
             }
         )
