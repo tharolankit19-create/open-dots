@@ -4,8 +4,11 @@ import android.Manifest
 import android.content.Intent
 import android.os.Build
 import android.provider.Settings
+import android.graphics.BitmapFactory
+import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -53,6 +56,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -524,11 +528,14 @@ private fun CloudBrowserScreen(state: AppState) {
     var botId by remember(state.cloudConfig.botId) { mutableStateOf(state.cloudConfig.botId) }
     var token by remember { mutableStateOf("") }
     var url by remember { mutableStateOf("https://example.com") }
+    var clickX by remember { mutableStateOf("640") }
+    var clickY by remember { mutableStateOf("400") }
+    var typeText by remember { mutableStateOf("") }
 
     Column(Modifier.fillMaxSize()) {
         ScreenHeader(
             "Cloud Browser",
-            "Optional isolated browser node using Open Dots Docker/Playwright or a remote computer provider"
+            "Real isolated browser node with live frames and governed navigation/input"
         )
         Column(
             modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
@@ -580,10 +587,50 @@ private fun CloudBrowserScreen(state: AppState) {
                             }
                         ) { Text("Start") }
                         OutlinedButton(
-                            onClick = { scope.launch { state.refreshCloudStatus() } }
+                            onClick = {
+                                state.saveCloudConfig(CloudBrowserConfig(baseUrl, botId), token)
+                                scope.launch {
+                                    state.refreshCloudStatus()
+                                    state.refreshCloudFrame()
+                                }
+                            }
                         ) { Text("Refresh") }
                     }
                     Text(state.cloudStatus, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Live browser", fontWeight = FontWeight.Bold)
+                    val frame = state.cloudFrame
+                    val image = remember(frame?.dataBase64) {
+                        frame?.dataBase64?.let { encoded ->
+                            runCatching {
+                                val bytes = Base64.decode(encoded, Base64.DEFAULT)
+                                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+                            }.getOrNull()
+                        }
+                    }
+                    if (image != null) {
+                        Image(
+                            bitmap = image,
+                            contentDescription = "Cloud Browser frame",
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(
+                            "${frame?.width ?: 0}×${frame?.height ?: 0} · ${frame?.url ?: "unknown URL"}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    } else {
+                        Text(
+                            frame?.message ?: "Start the browser and refresh to load a real Playwright frame.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                    OutlinedButton(onClick = { scope.launch { state.refreshCloudFrame() } }) {
+                        Text("Refresh frame")
+                    }
                 }
             }
 
@@ -604,9 +651,59 @@ private fun CloudBrowserScreen(state: AppState) {
                         },
                         enabled = url.startsWith("http://") || url.startsWith("https://")
                     ) { Text("Open in Cloud Browser") }
+                }
+            }
+
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Input", fontWeight = FontWeight.Bold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = clickX,
+                            onValueChange = { clickX = it.filter(Char::isDigit) },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("X") },
+                            singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = clickY,
+                            onValueChange = { clickY = it.filter(Char::isDigit) },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("Y") },
+                            singleLine = true
+                        )
+                        Button(
+                            onClick = {
+                                val x = clickX.toIntOrNull()
+                                val y = clickY.toIntOrNull()
+                                if (x != null && y != null) scope.launch { state.cloudClick(x, y) }
+                            }
+                        ) { Text("Click") }
+                    }
+                    OutlinedTextField(
+                        value = typeText,
+                        onValueChange = { typeText = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Text to type into focused field") }
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = { scope.launch { state.cloudType(typeText) } },
+                            enabled = typeText.isNotBlank()
+                        ) { Text("Type") }
+                        OutlinedButton(
+                            onClick = { scope.launch { state.cloudKeypress("Enter") } }
+                        ) { Text("Enter") }
+                        OutlinedButton(
+                            onClick = { scope.launch { state.cloudScroll(600) } }
+                        ) { Text("Scroll down") }
+                        OutlinedButton(
+                            onClick = { scope.launch { state.cloudScroll(-600) } }
+                        ) { Text("Scroll up") }
+                    }
                     Text(
-                        "Navigation is not silently trusted. If the server policy requires approval, " +
-                            "you will see an approval dialog before execution."
+                        "Navigation and input are separate governed capabilities. Each write waits for server approval before execution.",
+                        style = MaterialTheme.typography.bodySmall
                     )
                 }
             }
@@ -733,10 +830,10 @@ private fun CloudApprovalDialog(state: AppState) {
     val scope = rememberCoroutineScope()
     AlertDialog(
         onDismissRequest = {},
-        title = { Text("Allow Cloud Browser navigation?") },
+        title = { Text("Allow Cloud Browser action?") },
         text = {
             Text(
-                "The isolated browser is ready to navigate to:\n${pending.url}\n\n" +
+                "${pending.description}\n\nCapability: ${pending.capability}\nTarget: ${pending.target}\n\n" +
                     "This approval applies only to this server action."
             )
         },
