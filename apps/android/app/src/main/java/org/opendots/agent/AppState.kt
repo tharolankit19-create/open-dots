@@ -163,6 +163,11 @@ class AppState(private val context: Context) {
         memories.clear()
     }
 
+    fun clearDevicePolicies() {
+        store.clearPolicies()
+        addAudit("permissions.reset", "device", "user request", "success", "All saved device policies cleared.")
+    }
+
     fun scheduleReminder(text: String, minutes: Long) {
         RoutineWorker.schedule(context, text, minutes)
         addAssistant("Scheduled a visible reminder in $minutes minute(s): $text")
